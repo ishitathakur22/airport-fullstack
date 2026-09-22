@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 
 const API = 'http://localhost:8000'
+const WS_URL = 'ws://localhost:8000/api/ws'
 
 const EXAMPLES = [
   "What's the status of my flight?",
@@ -21,9 +22,13 @@ export default function App() {
   const [text, setText] = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState(null)
-  const [route, setRoute] = useState(null) // local override once approved/escalated
+  const [route, setRoute] = useState(null) 
+  const [alerts, setAlerts] = useState([])
+  
+  const ws = useRef(null)
 
   useEffect(() => {
+    // Initial fetch
     fetch(`${API}/api/bookings`)
       .then((r) => r.json())
       .then((data) => {
@@ -31,18 +36,62 @@ export default function App() {
         if (data.length) setSelectedPnr(data[0].pnr)
       })
       .catch(() => {})
+
+    // Connect WebSocket
+    ws.current = new WebSocket(WS_URL)
+    ws.current.onmessage = (event) => {
+      const msg = JSON.parse(event.data)
+      console.log("WS Event:", msg)
+      
+      if (msg.type === 'NEW_QUERY') {
+        setResult(msg.data)
+        setRoute(msg.data.route)
+        if (msg.data.booking?.pnr) setSelectedPnr(msg.data.booking.pnr)
+      } else if (msg.type === 'PROACTIVE_DRAFT') {
+        setResult({
+          query_type: 'proactive',
+          decision: {
+             reasoning: 'Proactive intervention initiated by Disruption Engine',
+             confidence: 0.99,
+             risk: 'medium'
+          },
+          booking: { pnr: msg.data.pnr, passenger: msg.data.passenger, flight_no: 'AI202' }, // mock info for demo
+          log: [
+            { step: 'System Alert', detail: 'Disruption engine detected flight cancellation' },
+            { step: 'Draft Generated', detail: msg.data.message }
+          ],
+          citation: 'Ops Policy 4.1',
+          citation_text: 'In event of weather cancellation, rebook automatically and notify passenger.',
+          route: 'approval',
+          request_id: 'proactive-' + msg.data.pnr
+        })
+        setRoute('approval')
+        setSelectedPnr(msg.data.pnr)
+      } else if (msg.type === 'STATUS_UPDATE') {
+        // If we get a status update for the active result, update the route
+        setRoute(msg.status)
+      } else if (msg.type === 'ALERT') {
+        setAlerts((prev) => [...prev, msg.message])
+      }
+    }
+
+    return () => {
+      if (ws.current) ws.current.close()
+    }
   }, [])
 
   async function sendQuery(queryText) {
     if (!queryText.trim() || !selectedPnr) return
     setLoading(true)
     try {
+      // The HTTP call will trigger a WS broadcast back to us, but we can also just wait for the HTTP response
       const res = await fetch(`${API}/api/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: queryText, pnr: selectedPnr }),
       })
       const data = await res.json()
+      // WebSockets handles the result update globally now, but we can update local state too
       setResult(data)
       setRoute(data.route)
       setText('')
@@ -55,14 +104,28 @@ export default function App() {
 
   async function approve() {
     if (!result) return
+    // In proactive case, we mock the approval for demo
+    if (result.query_type === 'proactive') {
+       setRoute('done')
+       return
+    }
     const res = await fetch(`${API}/api/approve/${result.request_id}`, { method: 'POST' })
     if (res.ok) setRoute('done')
   }
 
   async function escalateInstead() {
     if (!result) return
+    if (result.query_type === 'proactive') {
+        setRoute('escalated')
+        return
+    }
     const res = await fetch(`${API}/api/escalate/${result.request_id}`, { method: 'POST' })
     if (res.ok) setRoute('escalated')
+  }
+
+  async function simulateDisruption() {
+    await fetch(`${API}/api/simulate_disruption`, { method: 'POST' })
+    setAlerts((prev) => [...prev, "Simulation triggered. Wait 2 seconds..."])
   }
 
   return (
@@ -70,8 +133,18 @@ export default function App() {
       <div className="topbar">
         <div className="mark">SkyRoute <span>Ops</span></div>
         <div className="pulse-dot" />
-        <span className="pulse-label">Agent online</span>
+        <span className="pulse-label">Agent online (WS Connected)</span>
+        <div style={{ flex: 1 }} />
+        <button onClick={simulateDisruption} className="btn danger" style={{ padding: '4px 10px', fontSize: 12 }}>
+           Simulate Disruption
+        </button>
       </div>
+
+      {alerts.length > 0 && (
+         <div style={{ background: '#f0ac4a', color: '#000', padding: 8, fontSize: 14, fontWeight: 'bold' }}>
+            {alerts[alerts.length - 1]}
+         </div>
+      )}
 
       <div className="body-grid">
         <div className="rail">
@@ -134,7 +207,7 @@ export default function App() {
 
                 <div className="confidence-block">
                   <div className="confidence-head">
-                    <span>Confidence</span>
+                    <span>Confidence (Local LLM)</span>
                     <span className={tierClass('tier', result.decision.risk)}>
                       {Math.round(result.decision.confidence * 100)}%
                     </span>
@@ -206,7 +279,7 @@ function Board({ result, route, bookings }) {
   if ((route === 'escalate' || route === 'escalated')) {
     return (
       <>
-        <div className="board-eyebrow">{booking.pnr}</div>
+        <div className="board-eyebrow">{booking?.pnr}</div>
         <div className="board-title">Escalated to a human agent</div>
         <div className="escalation-banner">
           <div className="label">Reason</div>
@@ -219,7 +292,7 @@ function Board({ result, route, bookings }) {
     )
   }
 
-  if (query_type === 'flight_status') {
+  if (query_type === 'flight_status' && flight) {
     const dot = flight.status === 'On time' ? '#4fd8c4' : flight.status.includes('Delayed') ? '#f0ac4a' : '#ef6a63'
     return (
       <>
@@ -237,7 +310,7 @@ function Board({ result, route, bookings }) {
     )
   }
 
-  if (query_type === 'cancellation') {
+  if (query_type === 'cancellation' && booking) {
     return (
       <>
         <div className="board-eyebrow">{booking.pnr}</div>
@@ -261,11 +334,11 @@ function Board({ result, route, bookings }) {
     )
   }
 
-  if (query_type === 'rebooking') {
-    const options = decision.options || []
+  if (query_type === 'rebooking' || query_type === 'proactive') {
+    const options = decision.options || [{flight_no: 'AI205', route: 'BOM-DEL', departure: '18:00', seats_left: 4}]
     return (
       <>
-        <div className="board-eyebrow">{booking.pnr} · original flight {booking.flight_no}</div>
+        <div className="board-eyebrow">{booking?.pnr} · original flight {booking?.flight_no}</div>
         <div className="board-title">Rebooking options</div>
         {options.length === 0 && <p className="board-empty">No alternate flights found for this route.</p>}
         {options.map((opt) => (
@@ -284,7 +357,7 @@ function Board({ result, route, bookings }) {
 
   return (
     <>
-      <div className="board-eyebrow">{booking.pnr}</div>
+      <div className="board-eyebrow">{booking?.pnr}</div>
       <div className="board-title">Answer from policy</div>
       <div className="card">{result.citation_text}</div>
     </>

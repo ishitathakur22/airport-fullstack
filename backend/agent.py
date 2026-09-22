@@ -42,13 +42,41 @@ QUERY_KEYWORDS = {
 }
 
 
+import json
+from llm_manager import generate_json
+
 def classify_query(text: str) -> str:
-    """Return a query_type string based on keyword matching."""
-    lowered = text.lower()
-    for query_type, keywords in QUERY_KEYWORDS.items():
-        if any(kw in lowered for kw in keywords):
-            return query_type
-    return "unknown"
+    """Return a query_type string using the local LLM."""
+    system_prompt = (
+        "You are an intent classifier for an airline support agent. "
+        "Categorize the user's query into exactly one of the following categories: "
+        "rebooking, special_assistance, payment_issue, refund_status, baggage, flight_status, cancellation, policy_question, unknown. "
+        "Reply ONLY with a valid JSON object with a single key 'intent'. Do not add any explanation or markdown formatting."
+    )
+    user_prompt = f'Query: "{text}"'
+    
+    try:
+        response = generate_json(system_prompt, user_prompt)
+        # Clean up any potential markdown
+        response = response.strip()
+        if response.startswith("```json"): response = response[7:]
+        if response.startswith("```"): response = response[3:]
+        if response.endswith("```"): response = response[:-3]
+        
+        data = json.loads(response.strip())
+        intent = data.get("intent", "unknown").lower()
+        
+        if intent in QUERY_KEYWORDS or intent == "unknown":
+            return intent
+        return "unknown"
+    except Exception as e:
+        print(f"LLM Classification failed: {e}, fallback to keyword matching")
+        # Fallback
+        lowered = text.lower()
+        for query_type, keywords in QUERY_KEYWORDS.items():
+            if any(kw in lowered for kw in keywords):
+                return query_type
+        return "unknown"
 
 
 # ---------------------------------------------------------------------------
