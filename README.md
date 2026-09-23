@@ -50,13 +50,10 @@ backend is running first — the frontend calls `http://localhost:8000`.
 - "I was charged twice for my ticket" → escalated
 - "Do I need to confirm wheelchair assistance?" → escalated
 
-## Next upgrade (same as the Streamlit version's roadmap)
+## Next upgrades
 
-Classification and retrieval in `backend/agent.py` are still
-keyword/TF-IDF based for zero-setup speed. Swap `classify_query()` for
-a real LLM call (Ollama or an API model) and `PolicyRetriever` for
-FAISS + sentence-transformers when you're ready — the API contract to
-the frontend doesn't change, so nothing above the backend needs touching.
+- **Twilio SMS Webhook**: (Planned) Integrate a Twilio phone number to accept SMS queries, route them to the `/api/webhook/twilio` endpoint, and allow passengers to talk to the AI via text.
+- **RAG / Vector Database**: Swap `PolicyRetriever` for FAISS or ChromaDB when you're ready to handle large, complex airline policy documents.
 
 ## Deploying for your submission
 
